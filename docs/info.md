@@ -1,20 +1,34 @@
 <!---
-
 This file is used to generate your project datasheet. Please fill in the information below and delete any unused
 sections.
-
-You can also include images in this folder and reference them in the markdown. Each image must be less than
-512 kb in size, and the combined size of all images must be less than 1 MB.
 -->
 
 ## How it works
 
-Explain how your project works
+A programmable N-tap FIR filter, `y[n] = sum c[k]·x[n-k]`, with signed 8-bit samples and signed 8-bit Q1.7
+coefficients (`c/128`). To fit a useful number of taps into one tile, the datapath is time-multiplexed:
+
+* The sample history and the coefficients sit in two rings of registers that rotate together past a single
+  read point, so no N:1 multiplexers are needed.
+* The multiply is done bit-serially with Horner's rule over the coefficient bits (`p <- 2p ± x·c[b]`, MSB first,
+  MSB weight −128), so the 8×8 multiplier becomes one 17-bit adder. Each tap takes 8 clock cycles.
+* The sum is rounded, scaled by the gain setting (×1/×2/×4/×8) and saturated to signed 8 bits.
+
+After reset the coefficients default to a moving average, so the chip low-pass filters straight away.
+
+The RTL also contains four other architectures (direct form, transposed form, serial MAC, rotating serial MAC),
+selected with the `ARCH` parameter, used for the area/throughput comparison in the logbook.
 
 ## How to test
 
-Explain how to use your project
+1. Reset. The filter is now a moving average.
+2. Optional, load coefficients: for k = N−1 down to 0, put `c[k]` on `ui_in` and give a rising edge on `uio[0]`.
+3. Set the gain on `uio[3:2]` (00 = unity for Q1.7 coefficients).
+4. Wait for `READY` (`uio[6]`) high, put a sample on `ui_in`, give a rising edge on `uio[1]`.
+5. When `OUT_VALID` (`uio[7]`) pulses, `uo_out` holds the new signed output.
+
+Maximum sample rate is about fclk / (8N + 5): about 1 MS/s for N = 6 at 50 MHz.
 
 ## External hardware
 
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+None required. An ADC on `ui_in` and a DAC on `uo_out` turn it into a real-time audio or sensor filter.

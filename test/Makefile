@@ -1,18 +1,26 @@
 # Makefile
 # See https://docs.cocotb.org/en/stable/quickstart.html for more info
+#
+#   make                          RTL simulation of the default configuration
+#   make TB_NTAPS=12 TB_ARCH=1    RTL simulation of another configuration
+#   make GATES=yes                gate-level simulation (netlist from the GDS action)
 
 # defaults
 SIM ?= icarus
-FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v
+PROJECT_SOURCES = project.v fir_core.v
 
 ifneq ($(GATES),yes)
 
 # RTL simulation:
 SIM_BUILD				= sim_build/rtl
 VERILOG_SOURCES += $(addprefix $(SRC_DIR)/,$(PROJECT_SOURCES))
+ifdef TB_NTAPS
+SIM_BUILD       = sim_build/rtl_n$(TB_NTAPS)_a$(TB_ARCH)
+COMPILE_ARGS    += -DTB_NTAPS=$(TB_NTAPS) -DTB_ARCH=$(TB_ARCH)
+export FIR_NTAPS = $(TB_NTAPS)
+endif
 
 else
 
@@ -37,8 +45,10 @@ COMPILE_ARGS 		+= -I$(SRC_DIR)
 # Include the testbench sources:
 VERILOG_SOURCES += $(PWD)/tb.v
 TOPLEVEL = tb
+COCOTB_TOPLEVEL = tb
 
-# List test modules to run, separated by commas and without the .py suffix:
+# MODULE is the basename of the Python test file
+MODULE = test
 COCOTB_TEST_MODULES = test
 
 # include cocotb's make rules to take care of the simulator setup
