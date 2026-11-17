@@ -18,7 +18,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge, ReadOnly
 
-DEFAULT_NTAPS = 6          # keep in sync with NTAPS in src/project.v (used for GL_TEST)
+DEFAULT_NTAPS = 8          # keep in sync with NTAPS in src/project.v (used for GL_TEST)
 CLK_NS = 20                # 50 MHz, the Tiny Tapeout default clock
 
 COEF_WR, IN_VALID = 0, 1   # uio_in bit positions

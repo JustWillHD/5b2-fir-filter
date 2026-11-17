@@ -27,7 +27,7 @@ selected with the `ARCH` parameter, used for the area/throughput comparison in t
 4. Wait for `READY` (`uio[6]`) high, put a sample on `ui_in`, give a rising edge on `uio[1]`.
 5. When `OUT_VALID` (`uio[7]`) pulses, `uo_out` holds the new signed output.
 
-Maximum sample rate is about fclk / (8N + 5): about 1 MS/s for N = 6 at 50 MHz.
+Maximum sample rate is about fclk / (8N + 5): about 0.7 MS/s for N = 8 at 50 MHz.
 
 ## External hardware
 

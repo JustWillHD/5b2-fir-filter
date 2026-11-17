@@ -20,7 +20,7 @@
 `default_nettype none
 
 module tt_um_justwillhd_fir #(
-    parameter integer NTAPS = 6,   // chosen from the area sweep (see LOGBOOK.md); try 8 next
+    parameter integer NTAPS = 8,   // final: largest tap count that passed sign-off (LOGBOOK Exp 10)
     parameter integer ARCH  = 4    // 0 direct, 1 transposed, 2 serial MAC, 3 rotating serial, 4 rotating bit-serial
 ) (
     input  wire [7:0] ui_in,    // Dedicated inputs

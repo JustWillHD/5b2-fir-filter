@@ -60,7 +60,8 @@ module fir_core #(
     localparam signed [CW-1:0] C_DEFAULT = C_DEF_I[CW-1:0];
     localparam integer LAST_I = NTAPS - 1;
 
-    integer k;
+    // loop indices are declared inside each always block (a shared module-level
+    // integer would be driven by several processes and fails Yosys checks)
 
     // ------------------------------------------------------------------
     // Coefficient register chain (shared by all architectures)
@@ -69,7 +70,8 @@ module fir_core #(
     wire coef_rot;                       // serial archs 3/4 rotate the chain while computing
     wire coef_shift = coef_wr & ready;   // loading is ignored while a sample is being computed
 
-    always @(posedge clk) begin
+    always @(posedge clk) begin : p_coef
+        integer k;   // loop index local to this block (one driver per variable)
         if (!rst_n) begin
             for (k = 0; k < NTAPS; k = k + 1) coef[k] <= C_DEFAULT;
         end else if (coef_shift | coef_rot) begin
@@ -95,13 +97,15 @@ module fir_core #(
         assign ready  = 1'b1;
         assign coef_rot = 1'b0;
 
-        always @* begin
+        always @* begin : p_dsum
+            integer k;   // loop index local to this block (one driver per variable)
             sum = {AW{1'b0}};
             for (k = 0; k < NTAPS; k = k + 1)
                 sum = sum + coef[k] * x[k];       // NTAPS multipliers + adder tree
         end
 
-        always @(posedge clk) begin
+        always @(posedge clk) begin : p_dreg
+            integer k;   // loop index local to this block (one driver per variable)
             if (!rst_n) begin
                 for (k = 0; k < NTAPS; k = k + 1) x[k] <= {DW{1'b0}};
                 v1 <= 1'b0; y_valid <= 1'b0; y_full <= {AW{1'b0}};
@@ -124,7 +128,8 @@ module fir_core #(
         assign ready  = 1'b1;
         assign coef_rot = 1'b0;
 
-        always @(posedge clk) begin
+        always @(posedge clk) begin : p_treg
+            integer k;   // loop index local to this block (one driver per variable)
             if (!rst_n) begin
                 for (k = 0; k < NTAPS - 1; k = k + 1) z[k] <= {AW{1'b0}};
                 y_valid <= 1'b0; y_full <= {AW{1'b0}};
@@ -152,7 +157,8 @@ module fir_core #(
         assign accept = in_valid & ~busy;
         assign coef_rot = 1'b0;
 
-        always @(posedge clk) begin
+        always @(posedge clk) begin : p_sreg
+            integer k;   // loop index local to this block (one driver per variable)
             if (!rst_n) begin
                 for (k = 0; k < NTAPS; k = k + 1) x[k] <= {DW{1'b0}};
                 busy <= 1'b0; idx <= {IW{1'b0}}; acc <= {AW{1'b0}};
@@ -213,7 +219,8 @@ module fir_core #(
                                              : $signed({{(AW-PW){p_arr[PW-1]}}, p_arr});
         wire signed [AW-1:0] acc_next = acc + p_ext;
 
-        always @(posedge clk) begin
+        always @(posedge clk) begin : p_rreg
+            integer k;   // loop index local to this block (one driver per variable)
             if (!rst_n) begin
                 for (k = 0; k < NTAPS; k = k + 1) x[k] <= {DW{1'b0}};
                 busy <= 1'b0; tap <= {IW{1'b0}}; bitc <= BMAX; acc <= {AW{1'b0}};
