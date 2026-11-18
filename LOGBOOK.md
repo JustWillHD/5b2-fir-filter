@@ -1,6 +1,11 @@
 # 5B2 Logbook: Programmable FIR filter on SKY130 (Tiny Tapeout 1x1)
 
-Each entry: aim, what changed, results, what I learned, next step. Entries are ordered by the design story;
+Each entry: aim, what changed, results, what I learned, next step.
+
+Contents: overview table (below) | Exp 0-1 baseline | Exp 2 Yosys sweep | Exp 3 verification |
+Exp 4 first failure + fix | Exp 5-6 direct form | Exp 7-10 bit-serial scaling (+ scaling analysis) |
+Exp 11 shared multiplier | Exp 12 reproducibility | Exp 13 GAIN synchroniser (planned) | Exp 14 GitHub CI |
+Summary of findings | Planned work Entries are ordered by the design story;
 each LibreLane entry records its Vulkos run/job ID so every number is traceable, and its outputs
 (metrics.json, layout.png, timing screenshot) are saved under `runs/expNN_*/`.
 
@@ -29,7 +34,8 @@ with AI assistance; all LibreLane runs, results and analysis in this logbook are
 | 10 | ARCH 4, N = 8 | **87.6 %** | +2.54 / +0.11 ns | 0 / 0 | done: passed (prediction was wrong) |
 | 11 | ARCH 2 (serial MAC), N = 4 | 85.3 % | +0.18 / +0.11 ns | 0 / 0 | done: passes with almost no setup margin |
 | 12 | ARCH 4, N = 8, rerun of Exp 10 | 87.6 % | +2.54 / +0.11 ns | 0 / 0 | done: identical to Exp 10 |
-| 13 | ARCH 4, N = 8, GAIN pins synchronised | [__] | [__] | [__] | optional, to run |
+| 13 | ARCH 4, N = 8, GAIN pins synchronised | [__] | [__] | [__] | to run |
+| 14 | GitHub Actions CI (Tiny Tapeout flow), N = 8 | n/a | n/a | n/a | tests pass; gds build stuck on 1 met1 short, cancelled |
 
 ---
 
@@ -352,7 +358,32 @@ Updated ARCH 4 scaling table (std-cell area, um^2):
   area +~100 um^2.
 - Results: [__].
 
-## Summary of findings (Exp 1-12)
+## Exp 14: GitHub Actions CI on the repository (17 Nov 2026)
+- Aim: re-run the tests and the chip build automatically from the GitHub repo, using Tiny Tapeout's own
+  workflows, as an independent check of the Vulkos results.
+- Workflows: `test` (cocotb RTL simulation), `docs` (datasheet from info.yaml / docs/info.md),
+  `gds` (LibreLane hardening, then precheck, gate-level test and viewer).
+
+| Run | Commit | test | docs | gds |
+|---|---|---|---|---|
+| #2 | 000085e (first v2 upload, from an older zip) | passed | passed | failed after 3 m 31 s |
+| #3 | 91ca8ed (final: NTAPS = 8, loop-variable fix) | **passed** (45 s) | **passed** | stuck in detailed routing > 55 min, cancelled |
+
+- #2: the upload contained the old `fir_core.v` (shared loop variable, Exp 4) and NTAPS = 6. The RTL test passed
+  but the gds build failed: the same simulation-vs-synthesis lesson as Exp 4 [cause to confirm in the gds #2 log].
+- #3: the router reached a single remaining violation (one **met1 short**) and repeated "stubborn tiles"
+  iterations without clearing it. Routed wirelength 49,171 um and 10,534 vias, vs 40,804 um / 9,282 vias in
+  Vulkos (Exp 10) for the same RTL.
+- Config comparison: the repo's `src/config.json` has the same settings as the Vulkos config.json (density 60,
+  clock 20 ns, hold margins, margins, PDN pitch, CTS on). The difference is therefore the tool versions used by
+  the Tiny Tapeout GitHub action vs Vulkos, which produced a different placement.
+- Learned: at 87.6 % utilisation the design has very little routing margin; a different tool version is enough to
+  leave one wire unroutable. The RTL itself is verified in both environments.
+- Next: either give the router more room (area reduction, e.g. Exp 13 + removing resets from data registers), or
+  check the 8-tap result on GitHub with an extra step; if GitHub cannot close at 8 taps, consider 6 taps as the
+  tape-out-safe configuration.
+
+## Summary of findings (Exp 1-14)
 1. Programmable coefficients make multipliers the dominant cost: one 8x8 multiplier is ~14 % of the tile.
 2. The direct form (v1's structure) fits only 2 programmable taps (78 %); 4 taps need 154 % (Exp 5, 6).
 3. Sharing one multiplier (ARCH 2) fits 4 taps but at 85 % with no timing margin and the highest switching power
@@ -363,8 +394,8 @@ Updated ARCH 4 scaling table (std-cell area, um^2):
 6. Place-and-route overheads (hold buffers, clock tree) are 15-20 % of the area and change non-linearly from one
    configuration to the next; the clock tree size also drives power (Exp 9 vs 10). The flow itself is
    deterministic (Exp 12).
-7. Remaining issues in the final design: slow-corner slew violations, 12 max-fanout violations, and the
-   unsynchronised GAIN inputs on the critical path.
+7. Remaining issues in the final design: slow-corner slew violations, 12 max-fanout violations, the
+   unsynchronised GAIN inputs on the critical path, and thin routing margin (GitHub build, Exp 14).
 
 ## Planned
 - Synchronise / register the GAIN pins to remove the I/O critical path.
@@ -372,3 +403,162 @@ Updated ARCH 4 scaling table (std-cell area, um^2):
 - Find and fix the slow-corner slew violations.
 - Gate-level simulation of the final netlist (`make GATES=yes`).
 - Power comparison ARCH 2 vs ARCH 4 (rotating registers toggle more).
+
+---
+
+## Appendix A: How each architecture works (worked examples, for reference)
+
+Written 18 Nov 2026 as a study note. All five architectures live in `src/fir_core.v` and are selected at compile time
+with the `ARCH` parameter in `src/project.v`. A `generate` block builds **only** the selected one; the others are
+not synthesised (as if commented out), which is why the area changes so much between runs.
+
+The FIR filter computes `y = c0*x0 + c1*x1 + ... + c(N-1)*x(N-1)`: each tap multiplies a stored sample by its
+coefficient and all the products are added. The architectures differ only in **how many multiplies happen per
+clock and how each sample/coefficient pair reaches the multiplier**.
+
+### The common example (4 taps)
+
+| | Tap 0 | Tap 1 | Tap 2 | Tap 3 |
+|---|---|---|---|---|
+| Sample x (x0 = newest) | 3 | 2 | 5 | 1 |
+| Coefficient c | 4 | -2 | 1 | 3 |
+| Product c*x | 12 | -4 | 5 | 3 |
+
+Expected answer: 12 - 4 + 5 + 3 = **16**. (Real coefficients are Q1.7, so the output stage also divides by 128,
+rounds, applies the gain and saturates to 8 bits; small integers are used here to keep the maths readable.)
+
+---
+
+### ARCH 0: Direct form ("do it all at once")
+
+- Hardware: **N multipliers** (one per tap) + an adder tree, all in one clock.
+- Example: all four products are made at the same time and summed.
+
+```
+c0*x0 = 12 ┐
+c1*x1 = -4 ┼─► adder tree ─► 16      (1 clock)
+c2*x2 =  5 │
+c3*x3 =  3 ┘
+```
+
+- Result: fastest, but every tap costs a full 8x8 multiplier (~2,386 um^2, ~14% of the core each).
+  Exp 6: N = 4 needed 154% of the tile and failed.
+
+### ARCH 1: Transposed form ("all at once, but store partial sums")
+
+- Hardware: still **N multipliers**; the new sample is multiplied by every coefficient at once and the products are
+  added into a chain of registers `z` that hold partial answers. Samples arrive oldest first: 1, 5, 2, 3.
+
+| Sample in | y = c0*x + z1 | z1 <= c1*x + z2 | z2 <= c2*x + z3 | z3 <= c3*x |
+|---|---|---|---|---|
+| 1 | 4 + 0 = 4 | -2 | 1 | 3 |
+| 5 | 20 - 2 = 18 | -10 + 1 = -9 | 5 + 3 = 8 | 15 |
+| 2 | 8 - 9 = -1 | -4 + 8 = 4 | 2 + 15 = 17 | 6 |
+| 3 | 12 + 4 = **16** | | | |
+
+- Result: same answer, shorter adder path, but still N multipliers, so just as big (slightly bigger in Exp 2).
+
+### ARCH 2: Serial MAC with selectors ("one multiplier, a pointer picks each tap")
+
+- MAC = multiply-accumulate: one shared multiplier, one 20-bit accumulator `acc`, one tap per clock.
+- A counter `idx` drives two N:1 multiplexers (selectors) that pick `coef[idx]` and `x[idx]`.
+
+```verilog
+wire signed [15:0] prod = coef[idx] * x[idx];   // the one multiplier, fed by two selectors
+acc <= acc + prod_ext;  idx <= idx + 1;         // accumulate, move to next tap
+```
+
+| Clock | idx picks | Product | acc |
+|---|---|---|---|
+| 0 | accept sample, idx = 0, acc = 0 | - | 0 |
+| 1 | c0, x0 | 12 | 12 |
+| 2 | c1, x1 | -4 | 8 |
+| 3 | c2, x2 | 5 | 13 |
+| 4 | c3, x3 (last) | 3 | **16** -> y_full |
+| 5 | output stage (round, gain, saturate), OUT_VALID | | |
+
+- Clocks per output: **N + 2** (6 for 4 taps).
+- Data stays still, the pointer moves.
+- Result (Exp 11, N = 4): 85.3% utilisation; setup slack only **+0.18 ns**, because idx -> selector -> full multiplier
+  -> adder -> acc must all happen in one 20 ns clock; highest switching power (0.37 mW) because the array
+  multiplier glitches.
+
+### ARCH 3: Serial MAC with rotating registers ("one multiplier, the data moves to it")
+
+- Same registers as ARCH 2, but wired as a **ring** (last feeds back to first). The multiplier is hard-wired to the
+  **last position**, so the big N:1 selectors are not needed (only one 2:1 "new value or wrap-around" selector per ring).
+
+```verilog
+wire signed [7:0] x_top = x[NTAPS-1];   // always read the last position
+x[0] <= x[NTAPS-1];                     // wrap-around
+for (k = 1; k < NTAPS; k = k + 1) x[k] <= x[k-1];   // everything moves along one
+```
+
+| Clock | Samples (last in bold) | Coefficients (last in bold) | Product | acc |
+|---|---|---|---|---|
+| 1 | 3, 2, 5, **1** | 4, -2, 1, **3** | 3 | 3 |
+| 2 | 1, 3, 2, **5** | 3, 4, -2, **1** | 5 | 8 |
+| 3 | 5, 1, 3, **2** | 1, 3, 4, **-2** | -4 | 4 |
+| 4 | 2, 5, 1, **3** | -2, 1, 3, **4** | 12 | **16** |
+| after | 3, 2, 5, 1 | 4, -2, 1, 3 | back to start | |
+
+- Both rings rotate together, so each sample always meets its own coefficient.
+- Taps come out in reverse order, but addition order does not matter.
+- After N rotations everything is back in place, ready for the next sample.
+- Clocks per output: **N + 2** (same as ARCH 2).
+- Pointer stays still, data moves.
+- Result (Exp 2 Yosys): N = 8 is 10,021 vs 10,702 um^2 for ARCH 2 (~6% smaller). The saving grows with N; at N = 2
+  it is slightly worse. Still has the full multiplier, so the same timing/glitch issues as ARCH 2. Its real purpose
+  is to enable ARCH 4.
+
+### ARCH 4: Rotating + bit-serial multiplier ("no multiplier: shift-and-add one bit per clock") - FINAL DESIGN
+
+- Same ring as ARCH 3, but the 8x8 multiplier is replaced by **one adder/subtractor**. The product is built one
+  coefficient bit per clock, MSB first (Horner's rule):
+
+```verilog
+wire term   = c_top[bitc] ? x_top : 0;                      // this bit of c set? use x, else 0
+wire p_next = (p <<< 1) + ((bitc == 7) ? -term : term);     // double, then add (subtract on the sign bit)
+```
+
+- `p <<< 1` (doubling) is just wiring. Bit 7 is **subtracted** because in two's complement the MSB is worth -128.
+- The `*` line in `fir_core.v` (`p_arr`) is only used when ARCH = 3; for ARCH 4 nothing uses it, so Yosys removes it.
+
+Example, first tap in ring order: c = 3 (`00000011`), x = 1
+
+| Bit | Bit value | p = 2p +/- (bit ? x : 0) |
+|---|---|---|
+| 7 ... 2 | 0 | 0 |
+| 1 | 1 | 0 + 1 = 1 |
+| 0 | 1 | 2 + 1 = **3** (= 3 * 1) |
+
+Negative check: c = -2 (`11111110`), x = 3
+
+| Bit | Bit value | p |
+|---|---|---|
+| 7 (-128) | 1 -> subtract | 0 - 3 = -3 |
+| 6 ... 1 | 1 | -6 + 3 = -3 each step |
+| 0 | 0 | -6 + 0 = **-6** (= -2 * 3) |
+
+- After 8 clocks the tap's product goes into `acc`, both rings rotate, and the next tap starts. The four taps give
+  3, 5, -4, 12, so acc = **16**.
+- Clocks per output: **8N + 2** (34 for 4 taps, 66 for 8 taps, so about 0.76 MS/s at 50 MHz).
+- Result: Exp 2 at N = 8 is 8,636 vs 10,021 um^2 for ARCH 3 (1,385 um^2 saved by swapping the multiplier for one adder).
+  Exp 8 at N = 4: 63.2% utilisation, +4.26 ns setup slack, 0.17 mW switching (vs ARCH 2: 85.3%, +0.18 ns, 0.37 mW).
+  Exp 10: **N = 8 passed full sign-off at 87.6%**, which is the final design.
+
+---
+
+### Summary table
+
+| ARCH | Multiply hardware | How the tap is chosen | Clocks per output | 4 taps | Area trend |
+|---|---|---|---|---|---|
+| 0 Direct | N multipliers | Each tap has its own | 1 | 1 | Huge (does not fit N = 4) |
+| 1 Transposed | N multipliers | Each tap has its own | 1 | 1 | Huge |
+| 2 Serial MAC | 1 multiplier | Counter + N:1 selectors | N + 2 | 6 | Small |
+| 3 Rotating | 1 multiplier | Data rotates past a fixed input | N + 2 | 6 | Slightly smaller |
+| 4 Bit-serial | 1 adder | Data rotates past a fixed input | 8N + 2 | 34 | Smallest (8 taps fit) |
+
+**Key idea:** each step trades **speed for area**. ARCH 0/1 -> 2 shares the multiplier; 2 -> 3 removes the
+selectors; 3 -> 4 removes the multiplier itself. The filter only needs well under 1 MS/s, so the spare clock cycles
+are spent on taps instead of hardware.
