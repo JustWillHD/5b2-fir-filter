@@ -383,6 +383,13 @@ Updated ARCH 4 scaling table (std-cell area, um^2):
   check the 8-tap result on GitHub with an extra step; if GitHub cannot close at 8 taps, consider 6 taps as the
   tape-out-safe configuration.
 
+##Prediction for next run:
+Worst setup slack goes up, from +2.54 ns to roughly +4 to +5 ns, because the worst path is now an internal register-to-register path. At 4 taps, ARCH 4's internal path had +4.26 ns.
+Possible surprise: the new worst path could be the dout register → output pin path. If so, that tells us what to look at next.
+Area: about +4 flip-flops (roughly +80 to 100 µm²), so utilisation goes up by about 0.5%.
+Hold: might need a couple more hold buffers, because the gain_s1 → gain_s2 path is very short.
+
+
 ## Summary of findings (Exp 1-14)
 1. Programmable coefficients make multipliers the dominant cost: one 8x8 multiplier is ~14 % of the tile.
 2. The direct form (v1's structure) fits only 2 programmable taps (78 %); 4 taps need 154 % (Exp 5, 6).
